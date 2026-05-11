@@ -29,9 +29,13 @@ import yaml
 from api.tba import Match, TBAClient, load_auth_key
 from downloader.matcher import parse_title
 from downloader.youtube import (
+    UploaderRejected,
     download_video,
     fetch_playlist_entries,
     fetch_video_title,
+    probe_uploader,
+    sanitize_filename,
+    uploader_is_allowed,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -57,20 +61,49 @@ def video_path_for(cfg: dict, match_key: str) -> Path:
 
 
 def run_event_mode(cfg: dict, tba: TBAClient, event_key: str, limit: int | None, dry_run: bool) -> int:
-    """Download every match for an event using TBA's own video links."""
+    """Download every match for an event using TBA's own video links.
+
+    When `allowed_uploaders` is configured, each match's video list is scanned
+    and the first FRC-uploaded one wins; matches with no FRC upload are skipped.
+    """
     cache_root = REPO_ROOT / cfg["paths"]["videos"]
     tba.cache_dir = cache_root
     matches = tba.event_matches(event_key)
     print(f"[tba] {len(matches)} matches for {event_key}")
 
-    targets: list[tuple[Match, str]] = []  # (match, youtube_url)
+    allowed = cfg["download"].get("allowed_uploaders") or []
+    targets: list[tuple[Match, str]] = []
+    skipped_no_frc = 0
     for m in matches:
-        yt = next((v for v in m.videos if v.type == "youtube" and v.key), None)
-        if yt is None:
+        yt_videos = [v for v in m.videos if v.type == "youtube" and v.key]
+        if not yt_videos:
             continue
-        targets.append((m, yt.youtube_url))  # type: ignore[arg-type]
+        picked_url: str | None = None
+        for v in yt_videos:
+            url = v.youtube_url
+            if url is None:
+                continue
+            if not allowed:
+                picked_url = url
+                break
+            try:
+                uploader, _ = probe_uploader(url)
+            except Exception as e:
+                print(f"[probe] {m.key}: {e}")
+                continue
+            if uploader_is_allowed(uploader, allowed):
+                picked_url = url
+                break
+            print(f"[probe] {m.key}: skipping '{uploader}'")
+        if picked_url:
+            targets.append((m, picked_url))
+        else:
+            skipped_no_frc += 1
 
-    print(f"[tba] {len(targets)} matches have YouTube videos linked on TBA.")
+    print(
+        f"[tba] {len(targets)} matches downloadable, "
+        f"{skipped_no_frc} skipped (no allowed-uploader video)"
+    )
     if limit:
         targets = targets[:limit]
 
@@ -78,47 +111,85 @@ def run_event_mode(cfg: dict, tba: TBAClient, event_key: str, limit: int | None,
 
 
 def run_playlist_mode(
-    cfg: dict, tba: TBAClient, playlist_url: str, event_key: str, limit: int | None, dry_run: bool
+    cfg: dict, tba: TBAClient | None, playlist_url: str,
+    event_key: str | None, limit: int | None, dry_run: bool,
 ) -> int:
-    """Walk a playlist, parse each title, map to a TBA match key, download."""
+    """Walk a playlist. With an event key: map titles → TBA matches. Without:
+    save every video into videos/_unassigned/<title>.mp4."""
     cache_root = REPO_ROOT / cfg["paths"]["videos"]
-    tba.cache_dir = cache_root
-    matches = tba.event_matches(event_key)
-    matches_by_key = {m.key: m for m in matches}
-    print(f"[tba] {len(matches)} matches loaded for {event_key}")
-
     entries = fetch_playlist_entries(playlist_url)
     print(f"[yt]  {len(entries)} videos in playlist")
 
-    targets: list[tuple[Match, str]] = []
-    unmatched: list[tuple[str, str]] = []
-    for entry in entries:
-        parsed = parse_title(entry.title)
-        if parsed is None:
-            unmatched.append((entry.video_id, entry.title))
-            continue
-        key = parsed.key(event_key)
-        match = matches_by_key.get(key)
-        if match is None:
-            unmatched.append((entry.video_id, entry.title))
-            continue
-        targets.append((match, entry.url))
+    if event_key:
+        if tba is None:
+            print("[err] event key given but TBA not configured", file=sys.stderr)
+            return 2
+        tba.cache_dir = cache_root
+        matches = tba.event_matches(event_key)
+        matches_by_key = {m.key: m for m in matches}
+        print(f"[tba] {len(matches)} matches loaded for {event_key}")
 
-    print(f"[map] {len(targets)} videos auto-mapped, {len(unmatched)} unmatched")
-    if unmatched:
-        unmatched_log = cache_root / event_key / "unmatched.json"
-        unmatched_log.parent.mkdir(parents=True, exist_ok=True)
-        unmatched_log.write_text(
-            json.dumps(
-                [{"video_id": v, "title": t} for v, t in unmatched], indent=2
-            ),
-            encoding="utf-8",
-        )
-        print(f"[map] wrote {unmatched_log} (manual mapping UI lands in a later milestone)")
+        targets: list[tuple[Match, str]] = []
+        unmatched: list[tuple[str, str]] = []
+        for entry in entries:
+            parsed = parse_title(entry.title)
+            if parsed is None:
+                unmatched.append((entry.video_id, entry.title))
+                continue
+            key = parsed.key(event_key)
+            match = matches_by_key.get(key)
+            if match is None:
+                unmatched.append((entry.video_id, entry.title))
+                continue
+            targets.append((match, entry.url))
 
+        print(f"[map] {len(targets)} mapped, {len(unmatched)} unmatched")
+        if unmatched:
+            unmatched_log = cache_root / event_key / "unmatched.json"
+            unmatched_log.parent.mkdir(parents=True, exist_ok=True)
+            unmatched_log.write_text(
+                json.dumps(
+                    [{"video_id": v, "title": t} for v, t in unmatched], indent=2
+                ),
+                encoding="utf-8",
+            )
+            print(f"[map] wrote {unmatched_log}")
+        if limit:
+            targets = targets[:limit]
+        return _download_targets(cfg, targets, dry_run)
+
+    # No event key: dump everything into _unassigned/ with sanitized titles.
+    out_dir = cache_root / "_unassigned"
     if limit:
-        targets = targets[:limit]
-    return _download_targets(cfg, targets, dry_run)
+        entries = entries[:limit]
+    print(f"[map] no event key — saving {len(entries)} videos to {out_dir}")
+
+    allowed = cfg["download"].get("allowed_uploaders") or []
+    fmt = cfg["download"]["format"]
+    retries = cfg["download"]["retries"]
+    failed: list[tuple[str, str]] = []
+    succeeded = 0
+    for i, entry in enumerate(entries, 1):
+        fname = sanitize_filename(entry.title) or entry.video_id
+        out = out_dir / f"{fname}.mp4"
+        prefix = f"[{i}/{len(entries)}]"
+        if out.exists():
+            print(f"{prefix} skip  {fname} (exists)")
+            succeeded += 1
+            continue
+        print(f"{prefix} dl    {fname}")
+        if dry_run:
+            continue
+        try:
+            download_video(entry.url, out, format_spec=fmt, retries=retries,
+                           allowed_uploaders=allowed)
+            succeeded += 1
+        except UploaderRejected as e:
+            print(f"{prefix} skip  {fname} (uploader: {e.uploader})")
+        except Exception as e:
+            print(f"{prefix} FAIL  {fname}: {e}")
+            failed.append((fname, str(e)))
+    return 1 if failed else 0
 
 
 def run_single_mode(
@@ -143,12 +214,17 @@ def run_single_mode(
     print(f"[dl ] {label}")
     if dry_run:
         return 0
-    download_video(
-        video_url,
-        out,
-        format_spec=cfg["download"]["format"],
-        retries=cfg["download"]["retries"],
-    )
+    try:
+        download_video(
+            video_url,
+            out,
+            format_spec=cfg["download"]["format"],
+            retries=cfg["download"]["retries"],
+            allowed_uploaders=cfg["download"].get("allowed_uploaders") or [],
+        )
+    except UploaderRejected as e:
+        print(f"[skip] uploader '{e.uploader}' not in allowed list")
+        return 0
     print(f"[ok ] {out}")
     return 0
 
@@ -162,6 +238,7 @@ def _download_targets(
 ) -> int:
     fmt = cfg["download"]["format"]
     retries = cfg["download"]["retries"]
+    allowed = cfg["download"].get("allowed_uploaders") or []
     failed: list[tuple[str, str]] = []
 
     for i, (match, url) in enumerate(targets, 1):
@@ -174,8 +251,11 @@ def _download_targets(
         if dry_run:
             continue
         try:
-            download_video(url, out, format_spec=fmt, retries=retries)
-        except Exception as e:  # yt-dlp surfaces many exception types
+            download_video(url, out, format_spec=fmt, retries=retries,
+                           allowed_uploaders=allowed)
+        except UploaderRejected as e:
+            print(f"{prefix} skip  {match.key} (uploader: {e.uploader})")
+        except Exception as e:
             print(f"{prefix} FAIL  {match.key}: {e}")
             failed.append((match.key, str(e)))
 
@@ -196,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--gui", action="store_true", help="Launch the GUI (default if no other mode flag).")
     mode.add_argument("--event", help="TBA event key, e.g. 2025miket. Uses TBA's own video links.")
-    mode.add_argument("--playlist", help="YouTube playlist URL. Requires --event-key for matching.")
+    mode.add_argument("--playlist", help="YouTube playlist URL. Pass --event-key to auto-map to TBA; omit it to dump into _unassigned/.")
     mode.add_argument("--youtube", help="Single YouTube video URL.")
 
     p.add_argument("--event-key", help="(With --playlist) TBA event to match titles against.")
@@ -223,18 +303,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.youtube:
         return run_single_mode(cfg, args.youtube, args.match, args.dry_run)
 
-    # event/playlist modes need TBA
-    auth = load_auth_key(args.secrets)
-    tba = TBAClient(auth)
+    # Event mode always needs TBA. Playlist with --event-key also does.
+    # Playlist without --event-key works without TBA.
+    needs_tba = bool(args.event) or (args.playlist and args.event_key)
+    if needs_tba:
+        auth = load_auth_key(args.secrets)
+        tba = TBAClient(auth)
+    else:
+        tba = None
 
     if args.event:
         return run_event_mode(cfg, tba, args.event, args.limit, args.dry_run)
 
-    # playlist mode
-    event_key = args.event_key or cfg.get("event_key")
-    if not event_key:
-        print("--playlist requires --event-key (or event_key in config.yaml)", file=sys.stderr)
-        return 2
+    # Playlist mode — event key is optional. CLI flag wins; fall back to
+    # config only if explicitly --event-key wasn't given but config has one.
+    event_key = args.event_key or None
     return run_playlist_mode(cfg, tba, args.playlist, event_key, args.limit, args.dry_run)
 
 

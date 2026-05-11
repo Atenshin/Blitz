@@ -62,20 +62,21 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.player, stretch=1)
         top_layout.addWidget(self.timeline)
 
-        bottom = QSplitter(Qt.Orientation.Horizontal)
-        bottom.addWidget(self._wrap("Matches", self.match_list))
-        bottom.addWidget(self._placeholder("Detection Controls", "Lands in Milestone 3"))
-        bottom.addWidget(self._placeholder("Object Editor", "Lands in Milestone 6"))
-        bottom.setSizes([320, 320, 320])
+        self.bottom_panel = QSplitter(Qt.Orientation.Horizontal)
+        self.bottom_panel.addWidget(self._wrap("Matches", self.match_list))
+        self.bottom_panel.addWidget(self._placeholder("Detection Controls", "Lands in Milestone 3"))
+        self.bottom_panel.addWidget(self._placeholder("Object Editor", "Lands in Milestone 6"))
+        self.bottom_panel.setSizes([320, 320, 320])
 
-        root_split = QSplitter(Qt.Orientation.Vertical)
-        root_split.addWidget(top)
-        root_split.addWidget(bottom)
-        root_split.setSizes([560, 260])
+        self.root_split = QSplitter(Qt.Orientation.Vertical)
+        self.root_split.addWidget(top)
+        self.root_split.addWidget(self.bottom_panel)
+        self.root_split.setSizes([560, 260])
 
-        self.setCentralWidget(root_split)
+        self.setCentralWidget(self.root_split)
         self._build_toolbar()
         self._wire_shortcuts()
+        self._cinema_mode = False
 
         self.statusBar().showMessage("Ready")
         self.player.loaded.connect(lambda p: self.statusBar().showMessage(f"Loaded {Path(p).name}"))
@@ -83,17 +84,27 @@ class MainWindow(QMainWindow):
     # --- chrome ---
 
     def _build_toolbar(self) -> None:
-        bar = QToolBar("Main")
-        bar.setMovable(False)
-        self.addToolBar(bar)
+        self.toolbar = QToolBar("Main")
+        self.toolbar.setMovable(False)
+        self.addToolBar(self.toolbar)
 
         add_action = QAction("Add Videos…", self)
         add_action.triggered.connect(self._open_add_videos)
-        bar.addAction(add_action)
+        self.toolbar.addAction(add_action)
 
         refresh_action = QAction("Refresh List", self)
         refresh_action.triggered.connect(self.match_list.refresh)
-        bar.addAction(refresh_action)
+        self.toolbar.addAction(refresh_action)
+
+        self.toolbar.addSeparator()
+
+        cinema_action = QAction("Cinema Mode (Tab)", self)
+        cinema_action.triggered.connect(self._toggle_cinema_mode)
+        self.toolbar.addAction(cinema_action)
+
+        fullscreen_action = QAction("Fullscreen (F11)", self)
+        fullscreen_action.triggered.connect(self._toggle_fullscreen)
+        self.toolbar.addAction(fullscreen_action)
 
     def _wrap(self, title: str, inner: QWidget) -> QWidget:
         box = QGroupBox(title)
@@ -126,6 +137,9 @@ class MainWindow(QMainWindow):
         bind("Right", lambda: self.player.seek_relative(+5000))
         bind("Up", self._speed_up)
         bind("Down", self._speed_down)
+        bind("Tab", self._toggle_cinema_mode)
+        bind("F11", self._toggle_fullscreen)
+        bind("Escape", self._exit_fullscreen)
 
     def _speed_up(self) -> None:
         c = self.timeline.speed_combo
@@ -142,6 +156,41 @@ class MainWindow(QMainWindow):
         self.player.play()
         self.timeline.refresh_play_button()
 
+    def _toggle_cinema_mode(self) -> None:
+        """Hide toolbar + bottom panel for a giant video; Tab again to restore."""
+        self._cinema_mode = not self._cinema_mode
+        self.toolbar.setVisible(not self._cinema_mode)
+        self.bottom_panel.setVisible(not self._cinema_mode)
+        self.statusBar().setVisible(not self._cinema_mode)
+        if not self._cinema_mode:
+            self.statusBar().showMessage("Cinema mode off", 1500)
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self._exit_fullscreen()
+        else:
+            self._enter_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        # Hide everything except the video surface so it fills the whole screen.
+        self.toolbar.setVisible(False)
+        self.bottom_panel.setVisible(False)
+        self.statusBar().setVisible(False)
+        self.timeline.setVisible(False)
+        self.showFullScreen()
+
+    def _exit_fullscreen(self) -> None:
+        if not self.isFullScreen():
+            return
+        self.showNormal()
+        # Timeline is always visible in windowed mode.
+        self.timeline.setVisible(True)
+        # Toolbar, bottom panel, and status bar restore based on cinema mode.
+        chrome_visible = not self._cinema_mode
+        self.toolbar.setVisible(chrome_visible)
+        self.bottom_panel.setVisible(chrome_visible)
+        self.statusBar().setVisible(chrome_visible)
+
     def _open_add_videos(self) -> None:
         if not self.tba_auth_key:
             self.statusBar().showMessage(
@@ -154,6 +203,7 @@ class MainWindow(QMainWindow):
             format_spec=self.cfg["download"]["format"],
             retries=self.cfg["download"]["retries"],
             tba_auth_key=self.tba_auth_key or "",
+            allowed_uploaders=self.cfg["download"].get("allowed_uploaders") or [],
             default_event_key=self.cfg.get("event_key", ""),
         )
         dialog.downloads_completed.connect(self.match_list.refresh)

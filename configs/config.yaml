@@ -10,6 +10,12 @@ download:
   format: "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
   container: mp4
   retries: 3
+  # Substrings (case-insensitive) matched against the YouTube uploader/channel
+  # name. A video is downloaded only if at least one entry here is a substring
+  # of its uploader. Set to [] to allow any uploader.
+  allowed_uploaders:
+    - "FIRST Robotics Competition"
+    - "FIRSTRoboticsCompetition"
 
 video:
   fps: 30
