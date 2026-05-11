@@ -192,10 +192,11 @@ def _download_targets(
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="FRC match video downloader (Milestone 1)")
-    mode = p.add_mutually_exclusive_group(required=True)
+    p = argparse.ArgumentParser(description="FRC Match Analyzer")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--gui", action="store_true", help="Launch the GUI (default if no other mode flag).")
     mode.add_argument("--event", help="TBA event key, e.g. 2025miket. Uses TBA's own video links.")
-    mode.add_argument("--playlist", help="YouTube playlist URL. Requires --event for matching.")
+    mode.add_argument("--playlist", help="YouTube playlist URL. Requires --event-key for matching.")
     mode.add_argument("--youtube", help="Single YouTube video URL.")
 
     p.add_argument("--event-key", help="(With --playlist) TBA event to match titles against.")
@@ -207,6 +208,17 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     cfg = load_config(args.config)
+
+    # Default to GUI when no CLI download mode is specified.
+    no_cli_mode = not (args.event or args.playlist or args.youtube)
+    if args.gui or no_cli_mode:
+        from gui.app import run as run_gui
+        try:
+            auth = load_auth_key(args.secrets)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"[warn] {e}\n[warn] TBA features in the GUI will be disabled.", file=sys.stderr)
+            auth = None
+        return run_gui(REPO_ROOT, cfg, auth)
 
     if args.youtube:
         return run_single_mode(cfg, args.youtube, args.match, args.dry_run)
