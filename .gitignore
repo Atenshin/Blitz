@@ -1,0 +1,28 @@
+# Secrets
+configs/secrets.yaml
+
+# Data dirs
+videos/
+exports/
+edits/
+detections/
+datasets/
+models/*.pt
+models/runs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
