@@ -39,6 +39,7 @@ class AddVideosDialog(QDialog):
         format_spec: str,
         retries: int,
         tba_auth_key: str,
+        allowed_uploaders: list[str],
         default_event_key: str = "",
     ):
         super().__init__(parent)
@@ -49,6 +50,7 @@ class AddVideosDialog(QDialog):
         self.format_spec = format_spec
         self.retries = retries
         self.tba_auth_key = tba_auth_key
+        self.allowed_uploaders = allowed_uploaders
 
         # --- tabs ---
         self.tabs = QTabWidget()
@@ -109,14 +111,16 @@ class AddVideosDialog(QDialog):
         self.playlist_input = QLineEdit()
         self.playlist_input.setPlaceholderText("https://www.youtube.com/playlist?list=…")
         self.playlist_event = QLineEdit(default_event_key)
-        self.playlist_event.setPlaceholderText("e.g. 2025miket")
+        self.playlist_event.setPlaceholderText("optional — leave empty to skip mapping")
         form.addRow("Playlist URL:", self.playlist_input)
         form.addRow("TBA event key:", self.playlist_event)
         form.addRow(QLabel(
-            "<i>Titles like 'Qualification 12' are auto-mapped to the event's "
-            "TBA matches. Unmatched videos are skipped (logged below).</i>"
+            "<i>If an event key is provided, titles like 'Qualification 12' are "
+            "auto-mapped to the event's TBA matches.<br>"
+            "If left blank, all playlist videos are saved under "
+            "<b>videos/_unassigned/</b> with their titles as filenames.</i>"
         ))
-        self.tabs.addTab(w, "Playlist + Event")
+        self.tabs.addTab(w, "Playlist")
 
     def _build_event_tab(self, default_event_key: str) -> None:
         w = QWidget()
@@ -146,9 +150,9 @@ class AddVideosDialog(QDialog):
             mode = ("single", url, self.url_match_key.text().strip() or None)
         elif idx == 1:
             url = self.playlist_input.text().strip()
-            event = self.playlist_event.text().strip()
-            if not url or not event:
-                self._log("Both playlist URL and event key are required.")
+            event = self.playlist_event.text().strip() or None
+            if not url:
+                self._log("Enter a playlist URL.")
                 return
             mode = ("playlist", url, event)
         else:
@@ -171,6 +175,7 @@ class AddVideosDialog(QDialog):
             format_spec=self.format_spec,
             retries=self.retries,
             tba_auth_key=self.tba_auth_key,
+            allowed_uploaders=self.allowed_uploaders,
         )
         self._worker.moveToThread(self._thread)
         self._worker.progress.connect(self._on_progress)
