@@ -1,0 +1,17 @@
+# Milestone 1: download + TBA
+yt-dlp>=2024.10.0
+requests>=2.31.0
+pyyaml>=6.0
+tqdm>=4.66.0
+
+# Later milestones (commented until used)
+# torch  # install via CUDA index URL, see README
+# torchvision
+# ultralytics>=8.3.0
+# opencv-python>=4.10.0
+# numpy>=1.26.0
+# pandas>=2.2.0
+# openpyxl>=3.1.0
+# PyQt6>=6.7.0
+# paddleocr>=2.8.0
+# easyocr>=1.7.0
