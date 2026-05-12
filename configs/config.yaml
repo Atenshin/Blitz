@@ -22,6 +22,33 @@ video:
 
 detection:
   confidence: 0.35
+  iou: 0.5
+  imgsz: 1280
+  device: 0                  # 0 = first CUDA GPU, "cpu" to disable GPU
+  model_path: models/frc-2026/best.pt
+
+training:
+  dataset_yaml: datasets/labeled/Blitz.v5i.yolov8/data_split.yaml
+  base_model: yolov8m.pt     # n / s / m / l / x — bigger = slower + needs more VRAM
+  imgsz: 1280
+  batch: 8                   # drop to 4 or 2 if you hit CUDA OOM
+  epochs: 100
+  patience: 20               # early-stop after N epochs of no val improvement
+  workers: 4
+  project: models/runs
+  # Roboflow already baked in flip+rotation+brightness, so we dial down
+  # Ultralytics' built-in augmentations to avoid double-augmenting.
+  augmentation:
+    mosaic: 0.5
+    mixup: 0.1
+    hsv_h: 0.015
+    hsv_s: 0.4
+    hsv_v: 0.3
+    degrees: 2.0
+    translate: 0.05
+    scale: 0.3
+    fliplr: 0.5
+    flipud: 0.0
 
 tracking:
   max_lost_frames: 15

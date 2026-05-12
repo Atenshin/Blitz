@@ -7,8 +7,11 @@ exports/
 edits/
 detections/
 datasets/
-models/*.pt
 models/runs/
+
+# Model weights — never commit (pretrained bases or trained checkpoints)
+*.pt
+*.onnx
 
 # Python
 __pycache__/
