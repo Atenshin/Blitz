@@ -7,10 +7,15 @@ tqdm>=4.66.0
 # Milestone 2: GUI
 PyQt6>=6.7.0
 
-# Milestone 3.1: frame extraction for dataset prep
-opencv-python>=4.10.0
+# Milestone 3: detection
+# numpy<2 is required because torch 2.5.x was compiled against numpy 1.x and
+# crashes on numpy 2.x. opencv-python 4.11+ ships a numpy 2.x build, so we
+# pin both to a known-compatible pair until torch+cv2 catch up.
+numpy>=1.26,<2
+opencv-python>=4.10,<4.11
 imagehash>=4.3.1
 Pillow>=10.0.0
+ultralytics>=8.4.0
 
 # Later milestones (commented until used)
 # torch  # install via CUDA index URL, see README

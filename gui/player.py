@@ -1,21 +1,30 @@
-"""Video player widget — QMediaPlayer + QVideoWidget (Path A).
+"""Video player — QGraphicsView + QGraphicsVideoItem.
 
-Owns the QMediaPlayer instance. Other widgets (timeline scrubber, transport
-controls, shortcut handler) talk to the player through this widget's public
-methods rather than touching the QMediaPlayer directly.
+We started with QVideoWidget + a transparent child overlay (Path A), but on
+Windows + Qt6, QVideoWidget's native render surface covers any Qt widget on
+top regardless of z-order. The graphics-scene approach puts both the video
+(QGraphicsVideoItem) and the detection overlay (DetectionOverlay, a custom
+QGraphicsItem) into the same scene; the view's transform scales everything
+together, and Qt composes z-order naturally because it's all inside one
+QPainter pipeline.
 
-A DetectionOverlay child widget is layered on top of QVideoWidget, sized to
-match its rect. The overlay is transparent until a detection cache is attached
-via `set_detection_cache()`.
+Public API is unchanged so callers in main_window.py and timeline.py don't
+need to change.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QSize, QUrl, pyqtSignal
-from PyQt6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtCore import QRectF, QSizeF, QUrl, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QPainter
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
+from PyQt6.QtWidgets import (
+    QGraphicsScene,
+    QGraphicsView,
+    QVBoxLayout,
+    QWidget,
+)
 
 from detection.cache_index import CacheIndex
 from .overlay import DetectionOverlay
@@ -28,64 +37,108 @@ class VideoPlayerWidget(QWidget):
         load(path)
         play() / pause() / toggle_play()
         seek_ms(ms) / seek_relative(delta_ms)
-        step_frame(direction)            direction: +1 or -1
-        set_rate(rate)                   0.25..2.0
+        step_frame(direction)
+        set_rate(rate)
         position(), duration(), is_playing()
+        set_detection_cache(cache_index)
+        overlay                         # the DetectionOverlay graphics item
 
     Signals:
-        position_changed(int)      current playback position in ms
-        duration_changed(int)      total duration in ms (once known)
-        loaded(str)                emitted when a new file is loaded
+        position_changed(int)
+        duration_changed(int)
+        loaded(str)
     """
 
     position_changed = pyqtSignal(int)
     duration_changed = pyqtSignal(int)
     loaded = pyqtSignal(str)
 
-    # Assumed video FPS for frame stepping. Without decoding the file we don't
-    # know the real value; 30 is right for nearly all FRC broadcasts and any
-    # error here only affects single-frame nudges, not playback speed.
     _ASSUMED_FPS = 30
 
     def __init__(self):
         super().__init__()
+
+        # --- scene + items ---
+        self._scene = QGraphicsScene(self)
+        self._scene.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
+
+        # Video item lives at z=0. We'll size it to the source video's
+        # resolution once we know it (via _probe_video_size).
+        self._video_item = QGraphicsVideoItem()
+        self._scene.addItem(self._video_item)
+
+        # Detection overlay sits at z=10 — same coordinate system as the
+        # video. No manual scaling math; we draw boxes in raw bbox pixels.
+        self.overlay = DetectionOverlay()
+        self._scene.addItem(self.overlay)
+
+        # --- view ---
+        self._view = QGraphicsView(self._scene, self)
+        self._view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._view.setFrameStyle(0)
+        self._view.setStyleSheet("background: black; border: none;")
+        self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        # Pin the scene to top-left so the video doesn't drift when sized.
+        self._view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # --- player ---
         self._player = QMediaPlayer(self)
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
-
-        self._video = QVideoWidget(self)
-        self._player.setVideoOutput(self._video)
+        self._player.setVideoOutput(self._video_item)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._video)
-
-        # Detection overlay sits on top of the video widget. We track
-        # QVideoWidget's own resize events via an eventFilter so the overlay
-        # follows it even when the layout resizes the child after our own
-        # resizeEvent has fired.
-        self.overlay = DetectionOverlay(self._video)
-        self.overlay.raise_()
-        self.overlay.show()
-        self._video.installEventFilter(self)
+        layout.addWidget(self._view)
 
         self._player.positionChanged.connect(self.position_changed.emit)
         self._player.durationChanged.connect(self.duration_changed.emit)
-        # Route every position update into the overlay so it repaints with
-        # detections for the nearest cached frame.
         self._player.positionChanged.connect(
             lambda ms: self.overlay.set_current_sec(ms / 1000.0)
         )
-        # Pick up the video's native resolution when the file loads. The
-        # overlay needs it to map source-pixel bboxes into widget coords.
-        self._player.metaDataChanged.connect(self._on_metadata_changed)
+
+        # Until we know the real resolution, give the scene a sensible
+        # default so the view has something to fit.
+        self._set_scene_size(1920, 1080)
 
     # --- transport ---
 
     def load(self, path: str | Path) -> None:
         p = Path(path)
+        # Read source resolution via cv2 — fast and reliable, unlike
+        # QMediaPlayer.metaDataChanged which is unreliable on Windows.
+        size = self._probe_video_size(p)
+        if size is not None:
+            self._set_scene_size(*size)
         self._player.setSource(QUrl.fromLocalFile(str(p.resolve())))
         self.loaded.emit(str(p))
+
+    def _probe_video_size(self, video_path: Path) -> tuple[int, int] | None:
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_path))
+            if cap.isOpened():
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                if w > 0 and h > 0:
+                    return (w, h)
+        except Exception:
+            pass
+        return None
+
+    def _set_scene_size(self, w: int, h: int) -> None:
+        """Reshape the scene + video item to match source resolution and
+        re-fit the view so everything stays centered and aspect-correct."""
+        self._video_item.setSize(QSizeF(w, h))
+        self._scene.setSceneRect(0, 0, w, h)
+        self.overlay.set_video_size(w, h)
+        self._fit_view()
+
+    def _fit_view(self) -> None:
+        self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def play(self) -> None:
         self._player.play()
@@ -110,7 +163,6 @@ class VideoPlayerWidget(QWidget):
         self.seek_ms(self.position() + delta_ms)
 
     def step_frame(self, direction: int) -> None:
-        """Approximate single-frame step. Pauses if currently playing."""
         if self.is_playing():
             self.pause()
         delta = int(1000 / self._ASSUMED_FPS) * (1 if direction > 0 else -1)
@@ -132,21 +184,16 @@ class VideoPlayerWidget(QWidget):
 
     def set_detection_cache(self, cache: CacheIndex | None) -> None:
         self.overlay.set_cache(cache)
-        # Force a repaint at the current position so overlays appear
-        # immediately on pause/seek instead of waiting for the next tick.
+        # Trigger an immediate refresh at the current position so overlays
+        # appear without waiting for the next position tick.
         self.overlay.set_current_sec(self.position() / 1000.0)
 
-    def _on_metadata_changed(self) -> None:
-        # QMediaMetaData.Resolution is a QSize. It's populated some time after
-        # the file loads, so this slot fires multiple times — only react when
-        # we get something nonzero.
-        size = self._player.metaData().value(QMediaMetaData.Key.Resolution)
-        if isinstance(size, QSize) and size.isValid():
-            self.overlay.set_video_size(size.width(), size.height())
+    # --- view fitting ---
 
-    def eventFilter(self, watched, event):
-        # When QVideoWidget resizes (whether from our own resizeEvent or from
-        # the layout running after it), keep the overlay glued to its rect.
-        if watched is self._video and event.type() == QEvent.Type.Resize:
-            self.overlay.setGeometry(self._video.rect())
-        return super().eventFilter(watched, event)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_view()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_view()

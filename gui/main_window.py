@@ -149,11 +149,22 @@ class MainWindow(QMainWindow):
         bind("G", lambda: self._toggle_overlay_group("ground_balls"))
         bind("B", lambda: self._toggle_overlay_group("airborne_balls"))
         bind("O", lambda: self._toggle_overlay_group("goal"))
+        # Diagnostic: toggle a yellow "OVERLAY: N dets | W x H" badge in the
+        # top-left so we can tell whether the overlay is rendering at all.
+        bind("Shift+D", self._toggle_overlay_debug)
 
     def _toggle_overlay_group(self, group: str) -> None:
         now_visible = self.player.overlay.toggle_group(group)
         self.statusBar().showMessage(
             f"Overlay '{group}': {'visible' if now_visible else 'hidden'}", 1500
+        )
+
+    def _toggle_overlay_debug(self) -> None:
+        overlay = self.player.overlay
+        new = not overlay._debug
+        overlay.set_debug(new)
+        self.statusBar().showMessage(
+            f"Overlay debug badge: {'on' if new else 'off'}", 2000
         )
 
     def _speed_up(self) -> None:
