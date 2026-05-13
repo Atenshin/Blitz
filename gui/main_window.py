@@ -31,6 +31,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detection.cache_index import load_cache_for_video
+
 from .add_videos_dialog import AddVideosDialog
 from .match_list import MatchListWidget
 from .player import VideoPlayerWidget
@@ -47,6 +49,7 @@ class MainWindow(QMainWindow):
         self.cfg = cfg
         self.tba_auth_key = tba_auth_key
         self.videos_root = repo_root / cfg["paths"]["videos"]
+        self.detections_root = repo_root / cfg["paths"].get("detections", "detections")
         self.videos_root.mkdir(parents=True, exist_ok=True)
 
         # --- widgets ---
@@ -140,6 +143,18 @@ class MainWindow(QMainWindow):
         bind("Tab", self._toggle_cinema_mode)
         bind("F11", self._toggle_fullscreen)
         bind("Escape", self._exit_fullscreen)
+        # Detection-overlay visibility toggles. Spec called for R (robots) and
+        # G (ground balls); we extend with B (airborne balls) and O (goal).
+        bind("R", lambda: self._toggle_overlay_group("robots"))
+        bind("G", lambda: self._toggle_overlay_group("ground_balls"))
+        bind("B", lambda: self._toggle_overlay_group("airborne_balls"))
+        bind("O", lambda: self._toggle_overlay_group("goal"))
+
+    def _toggle_overlay_group(self, group: str) -> None:
+        now_visible = self.player.overlay.toggle_group(group)
+        self.statusBar().showMessage(
+            f"Overlay '{group}': {'visible' if now_visible else 'hidden'}", 1500
+        )
 
     def _speed_up(self) -> None:
         c = self.timeline.speed_combo
@@ -153,6 +168,22 @@ class MainWindow(QMainWindow):
 
     def _on_match_activated(self, path: str) -> None:
         self.player.load(path)
+        # Attach the detection cache if one exists for this video. The
+        # overlay clears itself silently when None is passed.
+        cache = load_cache_for_video(Path(path), self.detections_root)
+        self.player.set_detection_cache(cache)
+        if cache is not None:
+            n_frames = len(cache.frames)
+            n_dets = sum(len(f.detections) for f in cache.frames)
+            self.statusBar().showMessage(
+                f"Loaded {Path(path).name} — overlay: {n_frames} frames, {n_dets} detections",
+                4000,
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Loaded {Path(path).name} — no detection cache (run tools/run_inference.py)",
+                4000,
+            )
         self.player.play()
         self.timeline.refresh_play_button()
 

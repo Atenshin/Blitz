@@ -1,0 +1,186 @@
+"""YOLO inference for FRC matches.
+
+Two entry points:
+    FrameDetector(...).detect(frame) -> list[Detection]
+        Used by the GUI for live single-frame inference / preview.
+    process_video(video_path, ...) -> MatchDetectionCache
+        Used by the CLI to bulk-process whole matches into the cache.
+"""
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Iterator
+
+import cv2
+
+from .schema import Detection, FrameDetections, MatchDetectionCache, SCHEMA_VERSION
+
+
+class FrameDetector:
+    """Wraps an Ultralytics YOLO model with our cropped Detection schema.
+
+    Loading the model is moderately slow (~1s); reuse a single instance
+    across many frames or videos.
+    """
+
+    def __init__(
+        self,
+        model_path: Path | str,
+        imgsz: int = 1280,
+        confidence: float = 0.35,
+        iou: float = 0.5,
+        device: int | str = 0,
+    ):
+        # Late import so importing this module doesn't drag in torch/cv2
+        # for callers who only need the schema.
+        from ultralytics import YOLO
+
+        self.model_path = Path(model_path)
+        # Treat the input as a "bare model name" (e.g. "yolov8m.pt") that
+        # Ultralytics knows how to auto-download when the string has no
+        # directory component. Local paths must exist on disk.
+        is_bare_name = str(model_path) == self.model_path.name
+        if not is_bare_name and not self.model_path.exists():
+            raise FileNotFoundError(
+                f"Model weights not found at {self.model_path}. "
+                f"Train first with `python tools/train.py`."
+            )
+
+        self.model = YOLO(str(model_path))
+        self.imgsz = imgsz
+        self.confidence = confidence
+        self.iou = iou
+        self.device = device
+
+        # Ultralytics returns class names as a {idx: name} dict; convert to a
+        # plain list ordered by index so the schema stays simple.
+        names_dict = self.model.names
+        self.class_names: list[str] = [
+            names_dict[i] for i in sorted(names_dict.keys())
+        ]
+
+    def detect(self, frame) -> list[Detection]:
+        """Run inference on a single BGR numpy frame. Returns detections in
+        source-video pixel coordinates."""
+        results = self.model.predict(
+            frame,
+            imgsz=self.imgsz,
+            conf=self.confidence,
+            iou=self.iou,
+            device=self.device,
+            verbose=False,
+        )
+        if not results:
+            return []
+        r = results[0]
+        if r.boxes is None or len(r.boxes) == 0:
+            return []
+
+        boxes = r.boxes.xyxy.cpu().numpy()
+        confs = r.boxes.conf.cpu().numpy()
+        clss = r.boxes.cls.cpu().numpy().astype(int)
+
+        out: list[Detection] = []
+        for bbox, conf, cls in zip(boxes, confs, clss):
+            out.append(Detection(
+                cls=int(cls),
+                name=self.class_names[int(cls)],
+                conf=float(conf),
+                bbox=[float(x) for x in bbox.tolist()],
+            ))
+        return out
+
+
+def _iterate_sampled_frames(cap, frame_step: int) -> Iterator[tuple[int, "cv2.Mat"]]:
+    """Yield (frame_idx, frame) for every Nth source frame.
+
+    Uses grab() to skip past frames we don't need (cheap) and retrieve()
+    only on the ones we want (expensive). Matches the optimization in
+    tools/extract_frames.py.
+    """
+    frame_idx = 0
+    while True:
+        grabbed = cap.grab()
+        if not grabbed:
+            return
+        if frame_idx % frame_step == 0:
+            ok, frame = cap.retrieve()
+            if ok:
+                yield frame_idx, frame
+        frame_idx += 1
+
+
+def process_video(
+    video_path: Path,
+    detector: FrameDetector,
+    inference_fps: float = 15.0,
+    repo_root: Path | None = None,
+    progress_cb=None,
+) -> MatchDetectionCache:
+    """Run the detector over a whole video, returning the populated cache.
+
+    progress_cb, if given, is called as `progress_cb(sec_processed, total_sec)`
+    every N detections, suitable for driving a progress bar.
+    """
+    if repo_root is None:
+        repo_root = Path.cwd()
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open {video_path}")
+
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / src_fps if src_fps else 0.0
+    frame_step = max(1, int(round(src_fps / inference_fps)))
+
+    match_key = video_path.stem
+    try:
+        video_rel = str(video_path.resolve().relative_to(repo_root).as_posix())
+    except ValueError:
+        video_rel = str(video_path)
+    try:
+        model_rel = str(detector.model_path.resolve().relative_to(repo_root).as_posix())
+    except ValueError:
+        model_rel = str(detector.model_path)
+
+    cache = MatchDetectionCache(
+        schema_version=SCHEMA_VERSION,
+        match_key=match_key,
+        video=video_rel,
+        model=model_rel,
+        model_classes=list(detector.class_names),
+        src_fps=src_fps,
+        src_total_frames=total_frames,
+        inference_fps=inference_fps,
+        frame_step=frame_step,
+        imgsz=detector.imgsz,
+        confidence=detector.confidence,
+        iou=detector.iou,
+    )
+
+    last_progress = 0.0
+    for frame_idx, frame in _iterate_sampled_frames(cap, frame_step):
+        detections = detector.detect(frame)
+        sec = frame_idx / src_fps
+        cache.frames.append(FrameDetections(
+            frame_idx=frame_idx,
+            sec=sec,
+            detections=detections,
+        ))
+        # Throttle the callback so the bar updates ~10x/sec instead of every frame.
+        if progress_cb is not None and (sec - last_progress) >= 0.1:
+            progress_cb(sec, duration)
+            last_progress = sec
+
+    cap.release()
+    if progress_cb is not None:
+        progress_cb(duration, duration)
+    return cache
+
+
+def cache_path_for(video_path: Path, detections_root: Path) -> Path:
+    """Where the cache file lives for a given match video."""
+    event = video_path.parent.name
+    return detections_root / event / f"{video_path.stem}.json"

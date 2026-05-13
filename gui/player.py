@@ -3,15 +3,22 @@
 Owns the QMediaPlayer instance. Other widgets (timeline scrubber, transport
 controls, shortcut handler) talk to the player through this widget's public
 methods rather than touching the QMediaPlayer directly.
+
+A DetectionOverlay child widget is layered on top of QVideoWidget, sized to
+match its rect. The overlay is transparent until a detection cache is attached
+via `set_detection_cache()`.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QUrl, pyqtSignal
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PyQt6.QtCore import QEvent, QSize, QUrl, pyqtSignal
+from PyQt6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
+
+from detection.cache_index import CacheIndex
+from .overlay import DetectionOverlay
 
 
 class VideoPlayerWidget(QWidget):
@@ -53,8 +60,25 @@ class VideoPlayerWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._video)
 
+        # Detection overlay sits on top of the video widget. We track
+        # QVideoWidget's own resize events via an eventFilter so the overlay
+        # follows it even when the layout resizes the child after our own
+        # resizeEvent has fired.
+        self.overlay = DetectionOverlay(self._video)
+        self.overlay.raise_()
+        self.overlay.show()
+        self._video.installEventFilter(self)
+
         self._player.positionChanged.connect(self.position_changed.emit)
         self._player.durationChanged.connect(self.duration_changed.emit)
+        # Route every position update into the overlay so it repaints with
+        # detections for the nearest cached frame.
+        self._player.positionChanged.connect(
+            lambda ms: self.overlay.set_current_sec(ms / 1000.0)
+        )
+        # Pick up the video's native resolution when the file loads. The
+        # overlay needs it to map source-pixel bboxes into widget coords.
+        self._player.metaDataChanged.connect(self._on_metadata_changed)
 
     # --- transport ---
 
@@ -103,3 +127,26 @@ class VideoPlayerWidget(QWidget):
 
     def duration(self) -> int:
         return self._player.duration()
+
+    # --- detection overlay integration ---
+
+    def set_detection_cache(self, cache: CacheIndex | None) -> None:
+        self.overlay.set_cache(cache)
+        # Force a repaint at the current position so overlays appear
+        # immediately on pause/seek instead of waiting for the next tick.
+        self.overlay.set_current_sec(self.position() / 1000.0)
+
+    def _on_metadata_changed(self) -> None:
+        # QMediaMetaData.Resolution is a QSize. It's populated some time after
+        # the file loads, so this slot fires multiple times — only react when
+        # we get something nonzero.
+        size = self._player.metaData().value(QMediaMetaData.Key.Resolution)
+        if isinstance(size, QSize) and size.isValid():
+            self.overlay.set_video_size(size.width(), size.height())
+
+    def eventFilter(self, watched, event):
+        # When QVideoWidget resizes (whether from our own resizeEvent or from
+        # the layout running after it), keep the overlay glued to its rect.
+        if watched is self._video and event.type() == QEvent.Type.Resize:
+            self.overlay.setGeometry(self._video.rect())
+        return super().eventFilter(watched, event)
