@@ -1,0 +1,11 @@
+path: C:\Users\magic\Documents\GitHub\Blitz\.claude\worktrees\optimistic-bell-99ffc2\datasets\labeled\Blitz.v5i.yolov8
+train: train_split.txt
+val: val_split.txt
+test: test_split.txt
+nc: 5
+names:
+- ball_airborne
+- ball_ground
+- goal
+- robot_blue
+- robot_red
