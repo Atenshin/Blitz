@@ -3,6 +3,7 @@ event_key: 2025miket
 paths:
   videos: videos
   detections: detections
+  identities: identities
   edits: edits
   exports: exports
 

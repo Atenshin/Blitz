@@ -18,6 +18,7 @@ from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QGraphicsItem
 
 from detection.cache_index import CacheIndex
+from detection.identity import MatchIdentities, TrackIdentity
 from detection.schema import Detection
 
 
@@ -67,6 +68,7 @@ class DetectionOverlay(QGraphicsItem):
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
         self._cache: CacheIndex | None = None
+        self._identities: MatchIdentities | None = None
         self._video_size: tuple[int, int] | None = None
         self._current_dets: list[Detection] = []
         self._visible_groups = {
@@ -87,6 +89,27 @@ class DetectionOverlay(QGraphicsItem):
         self._cache = cache
         self._current_dets = []
         self.update()
+
+    def set_identities(self, identities: MatchIdentities | None) -> None:
+        """Attach a MatchIdentities file so robot labels render as team
+        numbers (e.g. "4499") instead of track IDs ("robot_blue #5")."""
+        self._identities = identities
+        self.update()
+
+    def _team_label_for(self, det: Detection) -> str | None:
+        """Look up the team number for a detection. Returns None if the
+        detection has no track ID, or no identities are loaded, or no team
+        could be attributed to that track."""
+        if self._identities is None or det.object_id is None:
+            return None
+        # Manual overrides win over OCR-derived attribution.
+        override = self._identities.manual_overrides.get(det.object_id)
+        if override:
+            return override
+        ident = self._identities.tracks.get(det.object_id)
+        if ident is None:
+            return None
+        return ident.team_number  # may be None if OCR found nothing valid
 
     def set_video_size(self, w: int, h: int) -> None:
         self.prepareGeometryChange()  # required when boundingRect changes
@@ -183,7 +206,20 @@ class DetectionOverlay(QGraphicsItem):
 
             if det.conf < self._label_threshold:
                 continue
-            label = f"{det.name} {det.conf:.2f}" if self._show_confidence else det.name
+            # Label priority (most informative first):
+            #   1. Attributed team number ("4499") — both robot color comes
+            #      from the box, and the number is the persistent identity
+            #   2. Track ID ("robot_blue #5") if we have a track but no team
+            #   3. Class + confidence for un-tracked detections
+            team = self._team_label_for(det)
+            if team is not None:
+                label = team
+            elif det.object_id is not None:
+                label = f"{det.name} #{det.object_id}"
+            elif self._show_confidence:
+                label = f"{det.name} {det.conf:.2f}"
+            else:
+                label = det.name
             metrics = painter.fontMetrics()
             text_w = metrics.horizontalAdvance(label) + 6
             text_h = metrics.height() + 2

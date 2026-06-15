@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: object_id populated by ByteTrack (M4.1)
 
 
 @dataclass
@@ -22,7 +22,8 @@ class Detection:
     conf: float                    # confidence 0-1
     bbox: list[float]              # [x1, y1, x2, y2] in source-video pixel coords
     source: Literal["yolo", "manual"] = "yolo"
-    object_id: int | None = None   # populated by the tracker (M4); null here
+    object_id: int | None = None   # ByteTrack ID, persistent across frames in the
+                                   # same video; null if tracking was disabled
 
 
 @dataclass
@@ -46,6 +47,8 @@ class MatchDetectionCache:
     imgsz: int
     confidence: float
     iou: float
+    tracking_used: bool = False    # True when caller used model.track() (object_id populated)
+    tracker: str = ""              # "bytetrack" / "botsort" / "" (none)
     frames: list[FrameDetections] = field(default_factory=list)
 
     # ---- IO helpers ----
@@ -81,5 +84,7 @@ class MatchDetectionCache:
             imgsz=data["imgsz"],
             confidence=data["confidence"],
             iou=data["iou"],
+            tracking_used=data.get("tracking_used", False),
+            tracker=data.get("tracker", ""),
             frames=frames,
         )

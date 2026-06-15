@@ -65,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--imgsz", type=int, default=d.get("imgsz", 1280))
     p.add_argument("--device", default=d.get("device", 0),
                    help='CUDA index (0, 1, ...) or "cpu".')
+    p.add_argument("--tracker", default="bytetrack",
+                   help='Tracker: "bytetrack" / "botsort" / "" to disable. Default bytetrack.')
     p.add_argument("--out", type=Path,
                    default=REPO_ROOT / cfg.get("paths", {}).get("detections", "detections"))
     p.add_argument("--force", action="store_true",
@@ -94,9 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         confidence=args.confidence,
         iou=args.iou,
         device=args.device,
+        tracker=args.tracker,
     )
     print(f"[init] ready in {time.time() - t0:.1f}s — classes: {detector.class_names}")
-    print(f"[init] {len(videos)} videos to process, inference @ {args.inference_fps} Hz")
+    tracker_label = args.tracker if args.tracker else "off"
+    print(f"[init] {len(videos)} videos to process, inference @ {args.inference_fps} Hz, tracker={tracker_label}")
 
     skipped = 0
     processed = 0
