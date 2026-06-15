@@ -6,6 +6,7 @@ videos/
 exports/
 edits/
 detections/
+identities/
 datasets/
 models/runs/
 

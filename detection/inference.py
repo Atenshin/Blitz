@@ -22,6 +22,11 @@ class FrameDetector:
 
     Loading the model is moderately slow (~1s); reuse a single instance
     across many frames or videos.
+
+    Tracking: when `tracker` is set (default "bytetrack"), `detect()` calls
+    `model.track()` with persistent state, so each Detection carries an
+    `object_id` that's stable across frames of the same video. Call
+    `reset_tracker()` between videos so IDs don't carry across matches.
     """
 
     def __init__(
@@ -31,6 +36,7 @@ class FrameDetector:
         confidence: float = 0.35,
         iou: float = 0.5,
         device: int | str = 0,
+        tracker: str = "bytetrack",  # "bytetrack" / "botsort" / "" to disable
     ):
         # Late import so importing this module doesn't drag in torch/cv2
         # for callers who only need the schema.
@@ -52,6 +58,11 @@ class FrameDetector:
         self.confidence = confidence
         self.iou = iou
         self.device = device
+        self.tracker = tracker
+        # When tracking is on, the second call onward needs persist=True so
+        # the tracker state carries across frames. The first call within a
+        # video must use persist=False to reset prior video's state.
+        self._track_persist = False
 
         # Ultralytics returns class names as a {idx: name} dict; convert to a
         # plain list ordered by index so the schema stays simple.
@@ -60,17 +71,38 @@ class FrameDetector:
             names_dict[i] for i in sorted(names_dict.keys())
         ]
 
+    def reset_tracker(self) -> None:
+        """Call before the first frame of each new video so track IDs don't
+        leak between matches."""
+        self._track_persist = False
+
     def detect(self, frame) -> list[Detection]:
         """Run inference on a single BGR numpy frame. Returns detections in
         source-video pixel coordinates."""
-        results = self.model.predict(
-            frame,
-            imgsz=self.imgsz,
-            conf=self.confidence,
-            iou=self.iou,
-            device=self.device,
-            verbose=False,
-        )
+        if self.tracker:
+            results = self.model.track(
+                frame,
+                imgsz=self.imgsz,
+                conf=self.confidence,
+                iou=self.iou,
+                device=self.device,
+                tracker=f"{self.tracker}.yaml",
+                persist=self._track_persist,
+                verbose=False,
+            )
+            # After the first call, keep state for subsequent frames in the
+            # same video. reset_tracker() flips this back to False.
+            self._track_persist = True
+        else:
+            results = self.model.predict(
+                frame,
+                imgsz=self.imgsz,
+                conf=self.confidence,
+                iou=self.iou,
+                device=self.device,
+                verbose=False,
+            )
+
         if not results:
             return []
         r = results[0]
@@ -80,14 +112,21 @@ class FrameDetector:
         boxes = r.boxes.xyxy.cpu().numpy()
         confs = r.boxes.conf.cpu().numpy()
         clss = r.boxes.cls.cpu().numpy().astype(int)
+        # r.boxes.id is None for detections the tracker couldn't match (e.g.
+        # very brief appearances). Keep them in the cache but with object_id=None.
+        ids = r.boxes.id.cpu().numpy().astype(int) if (
+            self.tracker and r.boxes.id is not None
+        ) else None
 
         out: list[Detection] = []
-        for bbox, conf, cls in zip(boxes, confs, clss):
+        for i, (bbox, conf, cls) in enumerate(zip(boxes, confs, clss)):
+            obj_id = int(ids[i]) if ids is not None else None
             out.append(Detection(
                 cls=int(cls),
                 name=self.class_names[int(cls)],
                 conf=float(conf),
                 bbox=[float(x) for x in bbox.tolist()],
+                object_id=obj_id,
             ))
         return out
 
@@ -158,7 +197,12 @@ def process_video(
         imgsz=detector.imgsz,
         confidence=detector.confidence,
         iou=detector.iou,
+        tracking_used=bool(detector.tracker),
+        tracker=detector.tracker,
     )
+
+    # Reset ByteTrack state so IDs from the previous video don't carry over.
+    detector.reset_tracker()
 
     last_progress = 0.0
     for frame_idx, frame in _iterate_sampled_frames(cap, frame_step):

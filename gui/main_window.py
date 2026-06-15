@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 from detection.cache_index import load_cache_for_video
+from detection.identity import MatchIdentities
 
 from .add_videos_dialog import AddVideosDialog
 from .match_list import MatchListWidget
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
         self.tba_auth_key = tba_auth_key
         self.videos_root = repo_root / cfg["paths"]["videos"]
         self.detections_root = repo_root / cfg["paths"].get("detections", "detections")
+        self.identities_root = repo_root / cfg["paths"].get("identities", "identities")
         self.videos_root.mkdir(parents=True, exist_ok=True)
 
         # --- widgets ---
@@ -178,25 +180,41 @@ class MainWindow(QMainWindow):
     # --- handlers ---
 
     def _on_match_activated(self, path: str) -> None:
+        video = Path(path)
         self.player.load(path)
         # Attach the detection cache if one exists for this video. The
         # overlay clears itself silently when None is passed.
-        cache = load_cache_for_video(Path(path), self.detections_root)
+        cache = load_cache_for_video(video, self.detections_root)
         self.player.set_detection_cache(cache)
+        # Optional: load the identities file so team numbers appear on top
+        # of tracked robots. Falls back to track-id labels if absent.
+        identities = self._load_identities_for(video)
+        self.player.overlay.set_identities(identities)
+
+        status_parts = [f"Loaded {video.name}"]
         if cache is not None:
-            n_frames = len(cache.frames)
             n_dets = sum(len(f.detections) for f in cache.frames)
-            self.statusBar().showMessage(
-                f"Loaded {Path(path).name} — overlay: {n_frames} frames, {n_dets} detections",
-                4000,
-            )
+            status_parts.append(f"{len(cache.frames)} frames, {n_dets} detections")
         else:
-            self.statusBar().showMessage(
-                f"Loaded {Path(path).name} — no detection cache (run tools/run_inference.py)",
-                4000,
-            )
+            status_parts.append("no detection cache (run tools/run_inference.py)")
+        if identities is not None:
+            n_named = sum(1 for t in identities.tracks.values() if t.team_number)
+            status_parts.append(f"{n_named} teams identified")
+        self.statusBar().showMessage(" — ".join(status_parts), 5000)
+
         self.player.play()
         self.timeline.refresh_play_button()
+
+    def _load_identities_for(self, video: Path) -> MatchIdentities | None:
+        event_key = video.parent.name
+        path = self.identities_root / event_key / f"{video.stem}.json"
+        if not path.exists():
+            return None
+        try:
+            return MatchIdentities.read(path)
+        except Exception as e:
+            self.statusBar().showMessage(f"Identities file failed to load: {e}", 5000)
+            return None
 
     def _toggle_cinema_mode(self) -> None:
         """Hide toolbar + bottom panel for a giant video; Tab again to restore."""
