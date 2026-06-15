@@ -110,12 +110,14 @@ def main(argv: list[str] | None = None) -> int:
           f"({len(train_files) / max(len(train_bases), 1):.1f}x per source frame), "
           f"{len(val_files)} val, {len(test_files)} test")
 
-    # Write list files relative to the dataset root so the YAML stays portable
-    # across machines.
+    # Ultralytics resolves .txt list paths relative to the CWD at training
+    # time, not relative to the YAML's `path:`. Writing absolute paths is the
+    # least-surprising option — the dataset isn't portable across machines
+    # without rerunning this script anyway.
     def write_list(name: str, files: list[Path]) -> Path:
         out = dataset / name
         out.write_text(
-            "\n".join(str(p.relative_to(dataset).as_posix()) for p in files) + "\n",
+            "\n".join(str(p.resolve().as_posix()) for p in files) + "\n",
             encoding="utf-8",
         )
         return out

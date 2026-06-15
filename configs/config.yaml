@@ -30,11 +30,13 @@ detection:
 training:
   dataset_yaml: datasets/labeled/Blitz.v5i.yolov8/data_split.yaml
   base_model: yolov8m.pt     # n / s / m / l / x — bigger = slower + needs more VRAM
-  imgsz: 1280
+  imgsz: 960                 # 640 fastest, 1280 most accurate; 960 is a good middle
   batch: 8                   # drop to 4 or 2 if you hit CUDA OOM
   epochs: 100
   patience: 20               # early-stop after N epochs of no val improvement
   workers: 4
+  cache: ram                 # "ram" / "disk" / false — RAM cache 3-5x speedup
+                             # after epoch 1; needs ~3 GB free RAM at imgsz 960
   project: models/runs
   # Roboflow already baked in flip+rotation+brightness, so we dial down
   # Ultralytics' built-in augmentations to avoid double-augmenting.

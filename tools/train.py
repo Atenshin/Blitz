@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--epochs", type=int, default=t.get("epochs", 100))
     p.add_argument("--patience", type=int, default=t.get("patience", 20))
     p.add_argument("--workers", type=int, default=t.get("workers", 4))
+    p.add_argument("--cache", default=t.get("cache", "ram"),
+                   help='"ram" / "disk" / false. RAM cache 3-5x speedup after '
+                        'epoch 1 but needs ~3 GB free RAM at imgsz 960.')
     p.add_argument("--device", default=cfg.get("detection", {}).get("device", 0),
                    help='CUDA device index (0, 1, ...) or "cpu".')
     p.add_argument("--project", type=Path,
@@ -80,6 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[train] run name: {args.name}")
     print(f"[train] output:   {args.project / args.name}")
 
+    # Normalize the cache flag — Ultralytics wants True/False/"ram"/"disk".
+    cache = args.cache
+    if isinstance(cache, str):
+        if cache.lower() in ("false", "no", "off", ""):
+            cache = False
+        elif cache.lower() in ("true", "yes", "on"):
+            cache = True
+
     model = YOLO(args.base_model)
     model.train(
         data=str(args.data),
@@ -88,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         epochs=args.epochs,
         patience=args.patience,
         workers=args.workers,
+        cache=cache,
         device=args.device,
         project=str(args.project),
         name=args.name,
