@@ -1,0 +1,505 @@
+# FRC Match Analysis System — Claude Code Project Specification
+# Project Goal
+Build a Python desktop application that analyzes FIRST Robotics Competition match videos.
+The system should:
+* Accept either:
+  * a single YouTube video URL
+  * OR a YouTube playlist URL
+* Download the videos automatically
+* Pull event and match metadata from The Blue Alliance API
+* Detect robots and balls using YOLO
+* Track shots and successful scores
+* Attribute shots/scores to teams
+* Segment stats by match period
+* Export results to Excel
+* Provide an interactive GUI with editable overlays and video playback controls
+This project is intended for offline scouting/statistical analysis.
+---
+# Core Functional Requirements
+## Video Input
+Support:
+### Single Video
+
+python main.py --youtube "https://youtube.com/watch?v=..."
+### Playlist
+
+python main.py --playlist "https://youtube.com/playlist?list=..."
+The application should:
+* Download videos using yt-dlp
+* Cache downloaded videos locally
+* Normalize video format using FFmpeg
+* Store videos under:
+
+/videos/{event_key}/{match_key}.mp4
+---
+# TBA Integration
+Use The Blue Alliance API.
+API docs:
+https://www.thebluealliance.com/apidocs
+The system should:
+* Pull all matches for an event
+* Retrieve:
+  * match keys
+  * alliance team lists
+  * match names
+  * video metadata
+Required endpoints:
+
+GET /event/{event_key}/matches/simple
+GET /match/{match_key}
+---
+# Match Association Logic
+If playlist/video titles contain:
+* q1
+* qualification 12
+* final 1 match 2
+* etc.
+then automatically associate videos with TBA matches.
+If automatic association fails:
+Provide a manual mapping UI.
+---
+# Detection System
+Use:
+* PyTorch
+* Ultralytics YOLOv8 or YOLOv9
+---
+# YOLO Classes
+The detector should identify:
+
+robot_blue
+robot_red
+ball_ground
+ball_airborne
+goal
+There is ONLY ONE scoring goal.
+Do NOT implement:
+* passes
+* possession tracking
+* carry tracking
+* lower goal tracking
+---
+# Detection Architecture
+YOLO should ONLY detect:
+* robots
+* balls
+* goal
+Do NOT attempt to classify:
+* score events
+* shots
+* possession
+Those should be inferred by logic later.
+---
+# Tracking System
+Use:
+* ByteTrack preferred
+* DeepSORT acceptable
+Track:
+* robot identities
+* ball trajectories
+---
+# Robot Identity Attribution
+Each alliance contains 3 robots.
+Use TBA alliance lists to map tracked robots.
+Preferred implementation:
+Use OCR on robot bumpers.
+Suggested OCR libraries:
+* PaddleOCR
+* EasyOCR
+Workflow:
+1. Crop robot bounding box
+2. Run OCR
+3. Extract team number
+4. Assign persistent team identity
+Fallback:
+Allow manual reassignment in GUI.
+---
+# Ball State System
+Ball states:
+
+GROUND
+AIRBORNE
+SCORED
+UNKNOWN
+---
+# Ground Ball Detection
+Conditions:
+* low velocity
+* near field floor region
+* not intersecting robot box
+Overlay color:
+RED
+---
+# Shot Detection
+A shot begins when:
+
+ball velocity > threshold
+AND
+trajectory originates near robot
+AND
+ball enters airborne state
+Overlay color:
+GREEN
+Increment:
+
+shots_attempted += 1
+---
+# Score Detection
+A shot counts as scored if:
+
+ball trajectory intersects goal region
+AND
+ball disappears into goal
+Increment:
+
+shots_scored += 1
+---
+# Shot Attribution
+Attribute shots to:
+
+nearest_robot_to_ball_before_launch
+Implementation:
+
+if distance(ball, robot) < threshold:
+    shooter = robot
+---
+# Match Time Segmentation
+Implement game periods.
+## Match Timing
+| Period     | Time      |
+| ---------- | --------- |
+| AUTO       | 0:20–0:00 |
+| TRANSITION | 2:20–2:10 |
+| SHIFT 1    | 2:10–1:45 |
+| SHIFT 2    | 1:45–1:20 |
+| SHIFT 3    | 1:20–0:55 |
+| SHIFT 4    | 0:55–0:30 |
+| END GAME   | 0:30–0:00 |
+Convert:
+
+frame_number / fps
+into:
+
+match_clock
+Implement helper:
+
+def get_match_period(match_time_remaining):
+    ...
+---
+# GUI Requirements
+Framework:
+* PyQt6
+The GUI should support:
+* video playback
+* overlays
+* editable bounding boxes
+* timeline scrubbing
+* statistics display
+---
+# GUI Layout
+
+ ---------------------------------------------------
+| Toolbar                                           |
+|---------------------------------------------------|
+|                                                   |
+|               Video Player                        |
+|                                                   |
+|---------------------------------------------------|
+| Timeline / Scrubber                               |
+|---------------------------------------------------|
+| Match Stats | Detection Controls | Object Editor |
+ ---------------------------------------------------
+---
+# Video Playback Controls
+Required controls:
+* Play
+* Pause
+* Frame advance
+* Frame rewind
+* Skip ±5 seconds
+* Playback speed adjustment
+* Timeline scrubber
+Recommended shortcuts:
+| Key    | Action              |
+| ------ | ------------------- |
+| Space  | Play/Pause          |
+| A      | Previous frame      |
+| D      | Next frame          |
+| Delete | Delete selected box |
+| S      | Save edits          |
+| G      | Toggle ground balls |
+| R      | Toggle robots       |
+---
+# Overlay Colors
+## Robots
+Blue transparent overlay.
+## Ground Balls
+Red overlay.
+## Counted Shots
+Green overlay.
+---
+# Editable Bounding Boxes
+The user MUST be able to manually fix YOLO detections.
+Editable objects:
+* robot boxes
+* ball boxes
+* goal region
+Required editing operations:
+* move
+* resize
+* delete
+* add new box
+Additional feature:
+
+Right click → Reassign Tracking ID
+This is required because trackers can swap robot identities.
+---
+# Detection Persistence
+Store manual edits separately from raw detections.
+Suggested model:
+
+class DetectionRecord:
+    frame: int
+    object_id: int
+    class_name: str
+    bbox: tuple
+    confidence: float
+    source: str  # yolo or manual
+---
+# Detection Cache Format
+Store detections per frame as JSON.
+Example:
+
+{
+  "frame": 1442,
+  "objects": [
+    {
+      "id": 1,
+      "class": "robot_blue",
+      "bbox": [100, 200, 300, 400],
+      "source": "manual"
+    }
+  ]
+}
+---
+# Overlay Rendering Order
+
+Video Frame
+    ↓
+Goal Overlay
+    ↓
+Robot Overlay
+    ↓
+Ball Overlay
+    ↓
+Trajectory Overlay
+    ↓
+UI Labels
+---
+# Excel Export Requirements
+Use:
+* Pandas
+* OpenPyXL
+Output file:
+
+exports/event_analysis.xlsx
+---
+# Excel Sheet 1 — Match Scores
+Layout:
+| Team | q1 | q2 | q3 |
+| ---- | -- | -- | -- |
+| 4499 | 12 | 9  | 14 |
+Values:
+
+balls scored per match
+---
+# Excel Sheet 2 — Period Breakdown
+Layout:
+| Team+Match | Auto Shots | Auto Scored | Shift1 Shots | Shift1 Scored |
+| ---------- | ---------- | ----------- | ------------ | ------------- |
+Track:
+* shots attempted
+* shots scored
+for each game period.
+---
+# Recommended Project Structure
+
+project/
+│
+├── api/
+├── downloader/
+├── videos/
+├── detection/
+├── tracking/
+├── gui/
+├── analytics/
+├── exports/
+├── edits/
+├── configs/
+├── models/
+├── datasets/
+└── main.py
+---
+# Recommended Architecture
+
+YouTube URL / Playlist
+        ↓
+Video Downloader
+        ↓
+TBA Match Fetcher
+        ↓
+Video Processor
+        ↓
+YOLO Detection
+        ↓
+Tracking Engine
+        ↓
+Shot Detection Logic
+        ↓
+Score Detection Logic
+        ↓
+Team Attribution
+        ↓
+Stats Aggregation
+        ↓
+Excel Export
+        ↓
+GUI Review + Editing
+---
+# Recommended Two-Pass Workflow
+## Pass 1 — Automated Detection
+Run:
+* YOLO
+* tracking
+* shot detection
+* score detection
+Save results.
+---
+## Pass 2 — Human Review
+User reviews:
+* incorrect boxes
+* missed shots
+* incorrect tracking
+* scoring mistakes
+Then regenerate stats.
+This is strongly preferred over full automation.
+---
+# Field Calibration (Important)
+The top camera introduces perspective distortion.
+Implement field calibration using:
+
+cv2.findHomography()
+Transform:
+
+pixel coordinates → field coordinates
+This improves:
+* trajectory prediction
+* shot path accuracy
+* robot proximity logic
+* goal intersection logic
+---
+# Performance Strategy
+DO NOT run YOLO during GUI playback.
+Instead:
+1. Preprocess detections
+2. Cache all detections
+3. Load cached detections during playback
+Benefits:
+* smooth scrubbing
+* instant seeking
+* responsive editing
+* lower GPU usage
+---
+# Suggested Models
+## Detection
+Preferred:
+* YOLOv8x
+* YOLOv9-c
+## Tracking
+Preferred:
+* ByteTrack
+## OCR
+Preferred:
+* PaddleOCR
+---
+# Config File Example
+
+event_key: 2025miket
+video:
+  fps: 30
+detection:
+  confidence: 0.35
+tracking:
+  max_lost_frames: 15
+export:
+  output: exports/event_analysis.xlsx
+---
+# CLI Examples
+## Single Video
+
+python main.py --youtube "URL"
+## Playlist
+
+python main.py --playlist "URL"
+## Analyze Existing Videos
+
+python main.py --analyze ./videos/
+---
+# Development Milestones
+## Milestone 1
+* YouTube downloading
+* Playlist support
+* TBA integration
+## Milestone 2
+* GUI video player
+* Playback controls
+* Timeline scrubbing
+## Milestone 3
+* YOLO detection overlays
+* Detection caching
+## Milestone 4
+* Tracking system
+* OCR-based robot identification
+## Milestone 5
+* Shot detection
+* Score detection
+## Milestone 6
+* Editable overlays
+* Manual correction tools
+## Milestone 7
+* Statistics aggregation
+* Excel exports
+## Milestone 8
+* Field calibration
+* Accuracy improvements
+---
+# Important Technical Notes
+## Blind Spot Cameras
+The bottom-left and bottom-right views are blind spot coverage.
+Version 1 should:
+* ONLY analyze the top camera
+* ignore lower split-screen views
+Future versions may support:
+* multi-camera fusion
+* stitched field coordinates
+---
+# Success Metrics
+| Metric           | Goal |
+| ---------------- | ---- |
+| Robot detection  | >95% |
+| Ball detection   | >85% |
+| Shot attribution | >80% |
+| Score detection  | >90% |
+---
+# Final Notes for Claude Code
+Priority order:
+1. Stable GUI + editing tools
+2. Reliable detection caching
+3. Accurate robot tracking
+4. Accurate shot detection
+5. Accurate score detection
+6. Excel export quality
+This project should prioritize:
+* reviewability
+* correction tools
+* reproducibility
+over full automation.
