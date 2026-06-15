@@ -7,8 +7,6 @@ exports/
 edits/
 detections/
 identities/
-datasets/
-models/runs/
 
 # Model weights — never commit (pretrained bases or trained checkpoints)
 *.pt

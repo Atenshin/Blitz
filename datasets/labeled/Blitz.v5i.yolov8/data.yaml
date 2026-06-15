@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 5
+names: ['ball_airborne', 'ball_ground', 'goal', 'robot_blue', 'robot_red']
+
+roboflow:
+  workspace: s-workspace-2l5s8
+  project: blitz-wrsdg
+  version: 5
+  license: MIT
+  url: https://universe.roboflow.com/s-workspace-2l5s8/blitz-wrsdg/dataset/5
