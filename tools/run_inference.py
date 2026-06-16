@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         iou=args.iou,
         device=args.device,
         tracker=args.tracker,
+        robot_filter=d.get("robot_filter"),
     )
     print(f"[init] ready in {time.time() - t0:.1f}s — classes: {detector.class_names}")
     tracker_label = args.tracker if args.tracker else "off"

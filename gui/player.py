@@ -174,6 +174,21 @@ class VideoPlayerWidget(QWidget):
     def rate(self) -> float:
         return self._player.playbackRate()
 
+    # --- audio ---
+
+    def set_volume(self, volume: float) -> None:
+        """Set output volume. `volume` is 0.0–1.0 (linear)."""
+        self._audio.setVolume(max(0.0, min(1.0, volume)))
+
+    def volume(self) -> float:
+        return self._audio.volume()
+
+    def set_muted(self, muted: bool) -> None:
+        self._audio.setMuted(muted)
+
+    def is_muted(self) -> bool:
+        return self._audio.isMuted()
+
     def position(self) -> int:
         return self._player.position()
 

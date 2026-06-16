@@ -17,6 +17,37 @@ import cv2
 from .schema import Detection, FrameDetections, MatchDetectionCache, SCHEMA_VERSION
 
 
+_ROBOT_CLASSES = {"robot_blue", "robot_red"}
+
+
+def _passes_robot_filter(
+    det: "Detection",
+    min_width_px: float,
+    min_height_px: float,
+    min_aspect: float,
+    max_aspect: float,
+    min_confidence: float,
+) -> bool:
+    """Return False for robot detections that look like people, hats, or other
+    non-robot objects.
+
+    Robots have rectangular/trapezoidal bumpers and are large relative to the
+    frame. People, hats, and coloured shirts are small and often tall-and-narrow.
+    """
+    if det.name not in _ROBOT_CLASSES:
+        return True
+    x1, y1, x2, y2 = det.bbox
+    w, h = x2 - x1, y2 - y1
+    if w < min_width_px or h < min_height_px:
+        return False
+    aspect = w / h if h > 0 else 0.0
+    if aspect < min_aspect or aspect > max_aspect:
+        return False
+    if det.conf < min_confidence:
+        return False
+    return True
+
+
 class FrameDetector:
     """Wraps an Ultralytics YOLO model with our cropped Detection schema.
 
@@ -37,6 +68,7 @@ class FrameDetector:
         iou: float = 0.5,
         device: int | str = 0,
         tracker: str = "bytetrack",  # "bytetrack" / "botsort" / "" to disable
+        robot_filter: dict | None = None,
     ):
         # Late import so importing this module doesn't drag in torch/cv2
         # for callers who only need the schema.
@@ -59,6 +91,12 @@ class FrameDetector:
         self.iou = iou
         self.device = device
         self.tracker = tracker
+        rf = robot_filter or {}
+        self._rf_min_w = rf.get("min_width_px", 60)
+        self._rf_min_h = rf.get("min_height_px", 40)
+        self._rf_min_aspect = rf.get("min_aspect", 0.3)
+        self._rf_max_aspect = rf.get("max_aspect", 5.0)
+        self._rf_min_conf = rf.get("min_confidence", 0.45)
         # When tracking is on, the second call onward needs persist=True so
         # the tracker state carries across frames. The first call within a
         # video must use persist=False to reset prior video's state.
@@ -121,13 +159,21 @@ class FrameDetector:
         out: list[Detection] = []
         for i, (bbox, conf, cls) in enumerate(zip(boxes, confs, clss)):
             obj_id = int(ids[i]) if ids is not None else None
-            out.append(Detection(
+            det = Detection(
                 cls=int(cls),
                 name=self.class_names[int(cls)],
                 conf=float(conf),
                 bbox=[float(x) for x in bbox.tolist()],
                 object_id=obj_id,
-            ))
+            )
+            if not _passes_robot_filter(
+                det,
+                self._rf_min_w, self._rf_min_h,
+                self._rf_min_aspect, self._rf_max_aspect,
+                self._rf_min_conf,
+            ):
+                continue
+            out.append(det)
         return out
 
 

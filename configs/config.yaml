@@ -27,6 +27,12 @@ detection:
   imgsz: 1280
   device: 0                  # 0 = first CUDA GPU, "cpu" to disable GPU
   model_path: models/frc-2026/best.pt
+  robot_filter:
+    min_width_px: 60         # robots span significant frame width; filters hats/heads
+    min_height_px: 40        # robots have visible bumper height
+    min_aspect: 0.3          # width/height — filters very tall narrow boxes (standing people)
+    max_aspect: 5.0          # filters implausibly wide slivers
+    min_confidence: 0.45     # higher bar for robot classes than balls/goal
 
 training:
   dataset_yaml: datasets/labeled/Blitz.v5i.yolov8/data_split.yaml

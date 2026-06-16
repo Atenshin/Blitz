@@ -75,11 +75,27 @@ class TimelineBar(QWidget):
             lambda i: self.player.set_rate(self.speed_combo.itemData(i))
         )
 
+        # --- volume ---
+        # Mute button toggles audio; its glyph reflects mute/level state.
+        self.mute_btn = QPushButton("🔊")
+        self.mute_btn.setFixedWidth(36)
+        self.mute_btn.setCheckable(True)
+        self.mute_btn.clicked.connect(self._on_mute_toggled)
+
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(int(self.player.volume() * 100))
+        self.volume_slider.setFixedWidth(100)
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+
         controls = QHBoxLayout()
         for w in (self.back_5_btn, self.prev_frame_btn, self.play_btn,
                   self.next_frame_btn, self.fwd_5_btn):
             controls.addWidget(w)
         controls.addStretch(1)
+        controls.addWidget(self.mute_btn)
+        controls.addWidget(self.volume_slider)
+        controls.addSpacing(12)
         controls.addWidget(QLabel("Speed:"))
         controls.addWidget(self.speed_combo)
 
@@ -117,6 +133,28 @@ class TimelineBar(QWidget):
 
     def _on_slider_released(self) -> None:
         self.player.seek_ms(self.slider.value())
+
+    # --- volume ---
+
+    def _on_volume_changed(self, value: int) -> None:
+        self.player.set_volume(value / 100.0)
+        # Dragging the slider above zero implicitly unmutes.
+        if value > 0 and self.mute_btn.isChecked():
+            self.mute_btn.setChecked(False)
+            self.player.set_muted(False)
+        self._refresh_mute_glyph()
+
+    def _on_mute_toggled(self, muted: bool) -> None:
+        self.player.set_muted(muted)
+        self._refresh_mute_glyph()
+
+    def _refresh_mute_glyph(self) -> None:
+        if self.mute_btn.isChecked() or self.volume_slider.value() == 0:
+            self.mute_btn.setText("🔇")
+        elif self.volume_slider.value() < 50:
+            self.mute_btn.setText("🔉")
+        else:
+            self.mute_btn.setText("🔊")
 
     # Called by the main window to reflect external play/pause changes
     # (e.g. the Space shortcut) on the button label.
