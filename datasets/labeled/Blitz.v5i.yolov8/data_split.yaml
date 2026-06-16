@@ -1,4 +1,4 @@
-path: C:\Users\magic\Documents\GitHub\Blitz\.claude\worktrees\optimistic-bell-99ffc2\datasets\labeled\Blitz.v5i.yolov8
+path: C:\Users\tgoye\Desktop\Rubit\Blitz\datasets\labeled\Blitz.v5i.yolov8
 train: train_split.txt
 val: val_split.txt
 test: test_split.txt
